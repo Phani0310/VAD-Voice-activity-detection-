@@ -1,97 +1,153 @@
+ """Voice Recorder with VAD and MP3 Conversion.
+
+This script records voice using WebRTC VAD and PyAudio.
+It automatically detects speech, saves it as WAV, and converts it to MP3.
+
+Libraries:
+- pyaudio
+- webrtcvad
+- wave
+- time
+- pydub
+"""
+
 import pyaudio
 import webrtcvad
 import wave
 import time
 import sys
-import keyboard  # For detecting Cmd + C / Ctrl + C
 from pydub import AudioSegment
 
-# Audio settings
-FORMAT = pyaudio.paInt16  # 16-bit audio format 
-CHANNELS = 1  # Mono audio
-RATE = 16000  # 16kHz sample rate 
-CHUNK = 320  # 20ms frame size 
-SILENCE_THRESHOLD = 1  # Seconds of silence to stop recording
 
-# Initialize PyAudio
-audio = pyaudio.PyAudio()
-stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE,
-                    input=True, frames_per_buffer=CHUNK)
+class VoiceRecorder:
+    """Handles voice recording with VAD and saves it as an MP3 file."""
 
-# Initialize WebRTC VAD with highest noise filtering
-vad = webrtcvad.Vad()
-vad.set_mode(3)  # 0 = Least aggressive, 3 = Most aggressive (best for noise filtering)
+    def __init__(self, rate=16000, chunk_duration_ms=20, silence_threshold=1, vad_mode=3):
+        """Initializes the voice recorder with audio and VAD settings.
 
-frames = []
-recording = False
-output_filename = f"voice_{int(time.time())}.wav"
-last_speech_time = time.time()
+        Args:
+            rate (int): Sample rate (Hz).
+            chunk_duration_ms (int): Chunk duration in milliseconds.
+            silence_threshold (int): Silence duration before stopping recording.
+            vad_mode (int): WebRTC VAD aggressiveness (0 to 3).
+        """
+        self.rate = rate
+        self.chunk_duration_ms = chunk_duration_ms
+        self.chunk_size = int(rate * chunk_duration_ms / 1000)
+        self.silence_threshold = silence_threshold
+        self.vad_mode = vad_mode
 
-print(" Listening for voice activity... Speak now! (Press Ctrl+C or Cmd+C to exit)")
+        self.audio = pyaudio.PyAudio()
+        self.stream = self._init_audio_stream()
+        self.vad = self._init_vad()
 
-try:
-    while True:
-        data = stream.read(CHUNK, exception_on_overflow=False)
+        self.frames = []
+        self.recording = False
+        self.output_filename = self._generate_filename()
+        self.last_speech_time = time.time()
 
-        # Check for voice activity
-        is_speech = vad.is_speech(data, RATE)
+    def _init_audio_stream(self):
+        """Initializes and returns the PyAudio stream."""
+        return self.audio.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=self.rate,
+            input=True,
+            frames_per_buffer=self.chunk_size
+        )
 
-        if is_speech:
-            if not recording:
-                print("VOICE detected! Recording started...")
-                recording = True
-                frames = []  # Start fresh
-            frames.append(data)
-            last_speech_time = time.time()
+    def _init_vad(self):
+        """Initializes and returns the WebRTC VAD."""
+        vad = webrtcvad.Vad()
+        vad.set_mode(self.vad_mode)
+        return vad
 
-        elif recording:
-            silence_duration = time.time() - last_speech_time
-            if silence_duration > SILENCE_THRESHOLD:
-                print(f"SILENCE detected for {SILENCE_THRESHOLD} seconds! Saving file...")
+    def _generate_filename(self):
+        """Generates a unique filename using the current timestamp."""
+        return f"voice_{int(time.time())}.wav"
 
-                # Save as WAV
-                with wave.open(output_filename, 'wb') as wf:
-                    wf.setnchannels(CHANNELS)
-                    wf.setsampwidth(audio.get_sample_size(FORMAT))
-                    wf.setframerate(RATE)
-                    wf.writeframes(b''.join(frames))
+    def _save_wav_file(self, filename):
+        """Saves recorded frames as a WAV file.
 
-                # Convert to MP3
-                mp3_filename = output_filename.replace(".wav", ".mp3")
-                sound = AudioSegment.from_wav(output_filename)
-                sound.export(mp3_filename, format="mp3")
+        Args:
+            filename (str): The WAV file name.
+        """
+        with wave.open(filename, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(self.audio.get_sample_size(pyaudio.paInt16))
+            wf.setframerate(self.rate)
+            wf.writeframes(b''.join(self.frames))
 
-                print(f" Saved: {mp3_filename}")
-                recording = False  # Reset state
-                output_filename = f"voice_{int(time.time())}.wav"
+    def _convert_to_mp3(self, wav_filename):
+        """Converts a WAV file to MP3.
 
-        # **Check for Ctrl+C / Cmd+C exit command**
-        if keyboard.is_pressed("ctrl+c") or keyboard.is_pressed("command+c"):
-            print("\n Stopped...")
+        Args:
+            wav_filename (str): The WAV file to convert.
 
-            # Save last recording if in progress
-            if recording and frames:
-                print(" Saving last recording...")
-                with wave.open(output_filename, 'wb') as wf:
-                    wf.setnchannels(CHANNELS)
-                    wf.setsampwidth(audio.get_sample_size(FORMAT))
-                    wf.setframerate(RATE)
-                    wf.writeframes(b''.join(frames))
+        Returns:
+            str: The MP3 filename.
+        """
+        mp3_filename = wav_filename.replace(".wav", ".mp3")
+        audio_segment = AudioSegment.from_wav(wav_filename)
+        audio_segment.export(mp3_filename, format="mp3")
+        return mp3_filename
 
-                mp3_filename = output_filename.replace(".wav", ".mp3")
-                sound = AudioSegment.from_wav(output_filename)
-                sound.export(mp3_filename, format="mp3")
-                print(f" Final file saved: {mp3_filename}")
+    def _reset_for_next_recording(self):
+        """Resets internal state for the next recording."""
+        self.frames = []
+        self.recording = False
+        self.output_filename = self._generate_filename()
 
-            print(" Exiting program.")
-            break
+    def listen_and_record(self):
+        """Main loop to listen and record voice based on VAD."""
+        print("Listening for voice activity... Speak now! (Press Ctrl+C or Cmd+C to exit)")
 
-except KeyboardInterrupt:
-    print("\n Stopping...")
+        try:
+            while True:
+                data = self.stream.read(self.chunk_size, exception_on_overflow=False)
+                is_speech = self.vad.is_speech(data, self.rate)
 
-# Cleanup
-stream.stop_stream()
-stream.close()
-audio.terminate()
-sys.exit(0)  
+                if is_speech:
+                    if not self.recording:
+                        print("VOICE detected! Recording started...")
+                        self.recording = True
+                        self.frames = []
+                    self.frames.append(data)
+                    self.last_speech_time = time.time()
+
+                elif self.recording:
+                    silence_duration = time.time() - self.last_speech_time
+                    if silence_duration > self.silence_threshold:
+                        print(f"SILENCE detected for {self.silence_threshold} seconds! Saving file...")
+                        self._save_wav_file(self.output_filename)
+                        mp3_filename = self._convert_to_mp3(self.output_filename)
+                        print(f"Saved: {mp3_filename}")
+                        self._reset_for_next_recording()
+
+        except KeyboardInterrupt:
+            self._stop_recording()
+
+        finally:
+            self.cleanup()
+
+    def _stop_recording(self):
+        """Handles stopping the recording and saving the last file if needed."""
+        print("\nStopped by user...")
+        if self.recording and self.frames:
+            print("Saving last recording...")
+            self._save_wav_file(self.output_filename)
+            mp3_filename = self._convert_to_mp3(self.output_filename)
+            print(f"Final file saved: {mp3_filename}")
+
+    def cleanup(self):
+        """Closes the audio stream and terminates PyAudio."""
+        self.stream.stop_stream()
+        self.stream.close()
+        self.audio.terminate()
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    recorder = VoiceRecorder()
+    recorder.listen_and_record()
 
